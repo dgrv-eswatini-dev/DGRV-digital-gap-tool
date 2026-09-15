@@ -69,21 +69,36 @@ pub async fn resend_organization_invitation(
         return Err(AppError::BadRequest("Insufficient permissions".to_string()));
     }
     let admin_token = app_state.keycloak_service.get_admin_token().await?;
-    // Primary attempt: Official Keycloak invitation resend
-    let resend_result = app_state
-        .keycloak_service
-        .resend_organization_invitation(&admin_token, &org_id, &invitation_id)
-        .await;
 
-    if resend_result.is_err() {
-        tracing::info!(user_id = %invitation_id, "Official resend failed (404/405), falling back to standard verification email");
-        // Fallback: Resend standard Keycloak verification email for the user
-        app_state
-            .keycloak_service
-            .trigger_email_verification(&admin_token, &invitation_id, None)
-            .await
-            .map_err(|e| AppError::InternalServerError(format!("Failed to resend invitation: {}", e)))?;
-    }
+    // `invitation_id` is the Keycloak user id (as returned by our pending list).
+    let user = app_state
+        .keycloak_service
+        .get_user_by_id(&admin_token, &invitation_id)
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to fetch user: {}", e)))?;
+
+    // Re-send the organisation invitation email via the invite-user endpoint.
+    app_state
+        .keycloak_service
+        .create_invitation(
+            &admin_token,
+            &org_id,
+            &user.email,
+            user.first_name.as_deref(),
+            user.last_name.as_deref(),
+            vec![],
+            None,
+        )
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to resend invitation: {}", e)))?;
+
+    // Also re-trigger the email verification action.
+    app_state
+        .keycloak_service
+        .trigger_email_verification(&admin_token, &invitation_id, None)
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to resend verification email: {}", e)))?;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
