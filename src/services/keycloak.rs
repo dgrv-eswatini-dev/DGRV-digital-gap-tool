@@ -550,178 +550,65 @@ impl KeycloakService {
 
 
     /// Get pending invitations for an organization.
-    /// Uses the official Keycloak API: GET /organizations/{org-id}/invitations
+    ///
+    /// Pending = (users tagged with `org.ro.active = org_id`) MINUS (active org members).
+    /// A user is "pending" until they appear in the org's member list. Their status is
+    /// derived from Keycloak's own `emailVerified` flag:
+    /// - `false` -> awaiting email verification
+    /// - `true`  -> email verified but org invitation not yet accepted
     pub async fn get_organization_invitations(
         &self,
         token: &str,
         org_id: &str,
     ) -> Result<Vec<crate::api::dto::invitation::PendingInvitation>> {
-        // Official Keycloak endpoint per docs:
-        // GET /admin/realms/{realm}/organizations/{org-id}/invitations
+        let invited = self.find_invited_users(token, org_id).await?;
+        let active = self.get_organization_members(token, org_id).await.unwrap_or_default();
+
+        let active_ids: std::collections::HashSet<String> =
+            active.into_iter().map(|m| m.id).collect();
+
+        let pending: Vec<crate::api::dto::invitation::PendingInvitation> = invited
+            .into_iter()
+            .filter(|u| !active_ids.contains(&u.id))
+            .map(|u| crate::api::dto::invitation::PendingInvitation {
+                id: u.id,
+                email: u.email,
+                first_name: u.first_name,
+                last_name: u.last_name,
+                sent_date: None,
+                expires_at: None,
+                status: Some(if u.email_verified {
+                    "email_verified".to_string()
+                } else {
+                    "pending".to_string()
+                }),
+            })
+            .collect();
+
+        tracing::info!(org_id = %org_id, count = pending.len(), "Computed pending invitations");
+        Ok(pending)
+    }
+
+    /// Find all users tagged with `org.ro.active = org_id` via Keycloak's `q` attribute search.
+    async fn find_invited_users(&self, token: &str, org_id: &str) -> Result<Vec<KeycloakUser>> {
         let url = format!(
-            "{}/admin/realms/{}/organizations/{}/invitations?max=200",
-            self.config.keycloak.url, self.config.keycloak.realm, org_id
+            "{}/admin/realms/{}/users?q={}:{}&briefRepresentation=false&max=1000",
+            self.config.keycloak.url, self.config.keycloak.realm, ORG_ACTIVE_ATTR, org_id
         );
 
-        tracing::info!(url = %url, org_id = %org_id, "Fetching org invitations via official endpoint");
+        tracing::info!(url = %url, org_id = %org_id, "Searching invited users by attribute");
 
         let resp = self.client.get(&url).bearer_auth(token).send().await?;
-        let status = resp.status();
-        tracing::info!(status = %status, "Keycloak invitations response");
-
-        if resp.status().is_success() {
-            // OrganizationInvitationRepresentation per Keycloak docs
-            #[derive(serde::Deserialize, Debug)]
-            struct OrgInvitation {
-                id: Option<String>,
-                email: Option<String>,
-                #[serde(rename = "firstName")]
-                first_name: Option<String>,
-                #[serde(rename = "lastName")]
-                last_name: Option<String>,
-                #[serde(rename = "sentDate")]
-                sent_date: Option<i64>,
-                #[serde(rename = "expiresAt")]
-                expires_at: Option<i64>,
-                status: Option<String>,
-            }
-
+        if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            tracing::info!(body = %body, "Raw invitations response body from Keycloak");
-
-            match serde_json::from_str::<Vec<OrgInvitation>>(&body) {
-                Ok(raw) => {
-                    tracing::info!(count = raw.len(), "Invitations successfully parsed from Keycloak");
-                    let pending = raw
-                        .into_iter()
-                        .filter_map(|inv| {
-                            let email = inv.email?;
-                            let id = inv.id.unwrap_or_else(|| email.clone());
-                            Some(crate::api::dto::invitation::PendingInvitation {
-                                id,
-                                email,
-                                first_name: inv.first_name,
-                                last_name: inv.last_name,
-                                sent_date: inv.sent_date,
-                                expires_at: inv.expires_at,
-                                status: inv.status,
-                            })
-                        })
-                        .collect();
-                    return Ok(pending);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        body = %body,
-                        "Failed to deserialize Keycloak invitations. Still attempting attribute fallback."
-                    );
-                }
-            }
-
-            // Fallback: attribute-based lookup for users invited via our app
-            // We search using the 'q' parameter for invited_org:{org_id} which is efficient
-            tracing::warn!(
-                org_id = %org_id,
-                status = %status,
-                "Official invitations endpoint didn't provide results, using attribute fallback"
-            );
-        } else {
-             // Fallback: attribute-based lookup for users invited via our app
-            tracing::warn!(
-                org_id = %org_id,
-                status = %resp.status(),
-                "Official invitations endpoint didn't provide results, using attribute fallback"
-            );
+            tracing::error!(status = %status, body = %body, "Attribute search for invited users failed");
+            return Ok(vec![]);
         }
 
-        // Fallback: If the official endpoint fails, we fetch realm users and filter manually by invited_org.
-        // We do this because Keycloak's `q` search parameter for attributes can be unreliable.
-        let search_url = format!(
-            "{}/admin/realms/{}/users?max=1000&briefRepresentation=false",
-            self.config.keycloak.url, self.config.keycloak.realm
-        );
-        tracing::info!(url = %search_url, org_id = %org_id, "Fetching users for manual attribute filtering");
-        
-        match self.client.get(&search_url).bearer_auth(token).send().await {
-            Ok(search_resp) if search_resp.status().is_success() => {
-                let body = search_resp.text().await.unwrap_or_default();
-                
-                match serde_json::from_str::<Vec<KeycloakUser>>(&body) {
-                    Ok(all_users) => {
-                        if let Some(first_user) = all_users.first() {
-                            tracing::info!(
-                                user_id = %first_user.id,
-                                has_attributes = first_user.attributes.is_some(),
-                                attributes = ?first_user.attributes,
-                                "Diagnostic: First user from list response"
-                            );
-                        }
-                        
-                        let unverified_users: Vec<KeycloakUser> = all_users
-                            .into_iter()
-                            .filter(|u| !u.email_verified)
-                            .take(100) // Safety limit
-                            .collect();
-                        
-                        tracing::info!(count = unverified_users.len(), "Fetching full details for unverified users to check attributes");
-                        
-                        let mut pending = Vec::new();
-                        for mut user in unverified_users {
-                            // Fetch full user if attributes are missing
-                            if user.attributes.is_none() {
-                                if let Ok(full_user) = self.get_user_by_id(token, &user.id).await {
-                                    user.attributes = full_user.attributes;
-                                }
-                            }
-                            
-                            
-                            // Check the invited_organization attribute
-                            if let Some(attributes) = &user.attributes {
-                                if let Some(org_attr) = attributes.get("invited_organization") {
-                                    let matches = if let Some(org_list) = org_attr.as_array() {
-                                        org_list.iter().any(|v| v.as_str() == Some(org_id))
-                                    } else if let Some(org_str) = org_attr.as_str() {
-                                        org_str == org_id
-                                    } else {
-                                        false
-                                    };
-                                    
-                                    if matches {
-                                        pending.push(crate::api::dto::invitation::PendingInvitation {
-                                            id: user.id,
-                                            email: user.email,
-                                            first_name: user.first_name,
-                                            last_name: user.last_name,
-                                            sent_date: None,
-                                            expires_at: None,
-                                            status: Some("pending".to_string()),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        
-                        tracing::info!(count = pending.len(), "Successfully filtered pending invitations after full detail fetch");
-                        Ok(pending)
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to deserialize Keycloak users for manual filtering");
-                        Ok(vec![])
-                    }
-                }
-            }
-            Ok(search_resp) => {
-                let status = search_resp.status();
-                tracing::error!(status = %status, "User fetch for manual filtering failed");
-                Ok(vec![])
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "User fetch request failed");
-                Ok(vec![])
-            }
-        }
+        let users: Vec<KeycloakUser> = resp.json().await?;
+        tracing::info!(count = users.len(), "Invited users found by attribute search");
+        Ok(users)
     }
 
 
@@ -935,6 +822,53 @@ impl KeycloakService {
                 ))
             }
         }
+    }
+
+    /// One-time migration: copy legacy `invited_organization` attribute values onto
+    /// `org.ro.active` so previously-invited users are picked up by the new pending
+    /// invitation search. Returns the number of users migrated.
+    pub async fn migrate_legacy_invitation_attribute(&self, token: &str) -> Result<usize> {
+        let url = format!(
+            "{}/admin/realms/{}/users?max=1000&briefRepresentation=false",
+            self.config.keycloak.url, self.config.keycloak.realm
+        );
+
+        let resp = self.client.get(&url).bearer_auth(token).send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("Failed to list users: {}", resp.status()));
+        }
+
+        let users: Vec<KeycloakUser> = resp.json().await?;
+        let mut migrated = 0usize;
+
+        for mut user in users {
+            if user.attributes.is_none() {
+                if let Ok(full) = self.get_user_by_id(token, &user.id).await {
+                    user.attributes = full.attributes;
+                }
+            }
+
+            let Some(attrs) = &user.attributes else { continue };
+            let Some(legacy) = attrs.get("invited_organization") else { continue };
+            let has_value = legacy
+                .as_array()
+                .map(|a| !a.is_empty())
+                .unwrap_or_else(|| legacy.is_string());
+
+            if !has_value {
+                continue;
+            }
+
+            let mut new_attrs = json!({ ORG_ACTIVE_ATTR: legacy.clone() });
+            new_attrs["invited_organization"] = json!([]);
+
+            self.update_user_attributes(token, &user.id, new_attrs, Some(&user.email))
+                .await?;
+            migrated += 1;
+            info!(user_id = %user.id, "Migrated legacy invitation attribute to {}", ORG_ACTIVE_ATTR);
+        }
+
+        Ok(migrated)
     }
 
     /// Get user by ID

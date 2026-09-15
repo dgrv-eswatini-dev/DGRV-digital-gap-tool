@@ -1,5 +1,6 @@
 use crate::{
-    api::dto::member::{AddMemberRequest, AddMemberResponse}, error::AppResult, models::keycloak::CreateUserRequest,
+    api::dto::member::{AddMemberRequest, AddMemberResponse}, error::AppResult,
+    models::keycloak::{CreateUserRequest, ORG_ACTIVE_ATTR},
     AppState,
 };
 use axum::{
@@ -61,7 +62,7 @@ pub async fn add_member(
         }
 
         if let Some(attrs) = &user.attributes {
-            if let Some(invited) = attrs.get("invited_organization") {
+            if let Some(invited) = attrs.get(ORG_ACTIVE_ATTR) {
                 if let Some(arr) = invited.as_array() {
                     if !arr.is_empty() {
                         return Err(crate::error::AppError::BadRequest("User is already a member of an organization".to_string()));

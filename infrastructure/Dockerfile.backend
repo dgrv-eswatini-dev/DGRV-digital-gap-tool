@@ -22,6 +22,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 ENV CHROME=/usr/bin/chromium
 COPY --from=builder /app/target/release/dgat-backend /app/dgrv-digital-gap-tool
+COPY --from=builder /app/target/release/backfill_invitations /app/backfill_invitations
 COPY doc/ /app/doc/
 COPY templates/ /app/templates/
 ENTRYPOINT ["/app/dgrv-digital-gap-tool"]

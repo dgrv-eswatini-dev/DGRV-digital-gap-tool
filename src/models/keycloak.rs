@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Keycloak user attribute used to track which organisation a user was invited to.
+/// Registered in the realm's User Profile schema so it is searchable via `q=`.
+pub const ORG_ACTIVE_ATTR: &str = "org.ro.active";
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct KeycloakUser {
     pub id: String,

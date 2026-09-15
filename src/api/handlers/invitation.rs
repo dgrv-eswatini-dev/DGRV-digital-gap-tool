@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::api::dto::invitation::{UserInvitationRequest, UserInvitationResponse};
 use crate::auth::claims::Claims;
 use crate::error::AppError;
-use crate::models::keycloak::CreateUserRequest;
+use crate::models::keycloak::{CreateUserRequest, ORG_ACTIVE_ATTR};
 use crate::AppState;
 
 fn get_token_from_extensions(token: &str) -> Result<String, AppError> {
@@ -139,7 +139,7 @@ pub async fn invite_user_to_organization(
         }
 
         if let Some(attrs) = &user.attributes {
-            if let Some(invited) = attrs.get("invited_organization") {
+            if let Some(invited) = attrs.get(ORG_ACTIVE_ATTR) {
                 if let Some(arr) = invited.as_array() {
                     if arr.iter().any(|v| v.as_str() != Some(org_id.as_str())) {
                         return Err(AppError::BadRequest("User is already a member of another organization".to_string()));
@@ -151,7 +151,7 @@ pub async fn invite_user_to_organization(
         user
     } else {
         // Create user if not exists with the invitation attribute
-        let initial_attrs = json!({ "invited_organization": [org_id.clone()] });
+        let initial_attrs = json!({ ORG_ACTIVE_ATTR: [org_id.clone()] });
         let create_user_request = CreateUserRequest {
             username: request.email.clone(),
             email: request.email.clone(),
@@ -179,7 +179,7 @@ pub async fn invite_user_to_organization(
             .update_user_attributes(
                 &admin_token, 
                 &new_user.id, 
-                json!({ "invited_organization": [org_id.clone()] }),
+                json!({ ORG_ACTIVE_ATTR: [org_id.clone()] }),
                 Some(&request.email)
             )
             .await;
@@ -215,12 +215,12 @@ pub async fn invite_user_to_organization(
         .update_user_attributes(
             &admin_token, 
             &user.id, 
-            json!({ "invited_organization": [org_id.clone()] }),
+            json!({ ORG_ACTIVE_ATTR: [org_id.clone()] }),
             Some(&user.email)
         )
         .await
     {
-        tracing::error!(error = %e, user_id = %user.id, "Failed to set invited_organization attribute on user");
+        tracing::error!(error = %e, user_id = %user.id, "Failed to set {} attribute on user", ORG_ACTIVE_ATTR);
     }
 
     // Create invitation

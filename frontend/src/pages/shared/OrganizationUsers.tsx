@@ -125,9 +125,15 @@ export default function OrganizationUsers() {
                     <td className="px-4 py-3 text-gray-600">{inv.firstName ?? "—"}</td>
                     <td className="px-4 py-3 text-gray-600">{inv.lastName ?? "—"}</td>
                     <td className="px-4 py-3">
-                      <Badge className="bg-amber-100 text-amber-700 border border-amber-300">
-                        Pending
-                      </Badge>
+                      {inv.status === "email_verified" ? (
+                        <Badge className="bg-blue-100 text-blue-700 border border-blue-300">
+                          Email verified
+                        </Badge>
+                      ) : (
+                        <Badge className="bg-amber-100 text-amber-700 border border-amber-300">
+                          Pending
+                        </Badge>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
