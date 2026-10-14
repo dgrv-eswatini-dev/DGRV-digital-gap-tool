@@ -917,7 +917,7 @@ impl KeycloakService {
     /// Get user organizations by user ID
     pub async fn get_user_organizations(&self, token: &str, user_id: &str) -> Result<Vec<KeycloakOrganization>> {
         let url = format!(
-            "{}/admin/realms/{}/users/{}/organizations",
+            "{}/admin/realms/{}/organizations/members/{}/organizations",
             self.config.keycloak.url, self.config.keycloak.realm, user_id
         );
 
