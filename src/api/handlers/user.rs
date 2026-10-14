@@ -34,6 +34,14 @@ pub async fn add_member(
         payload.dimension_ids
     );
 
+    // A user holds a single application role: refuse payloads asking for several
+    let mut requested_roles: Vec<&str> = payload.roles.iter().map(String::as_str).collect();
+    requested_roles.sort_unstable();
+    requested_roles.dedup();
+    if requested_roles.len() > 1 {
+        return Err(crate::error::AppError::BadRequest("A user can only have one role".to_string()));
+    }
+
     let admin_token = state.keycloak_service.get_admin_token().await?;
 
     let existing_user = state
@@ -54,6 +62,14 @@ pub async fn add_member(
         let groups = state.keycloak_service.get_user_groups(&admin_token, &user.id).await?;
         if groups.iter().any(|g| g.id != group_id) {
             return Err(crate::error::AppError::BadRequest("User is already a member of a cooperative".to_string()));
+        }
+
+        let current_roles = state.keycloak_service.get_user_app_roles(&admin_token, &user.id).await?;
+        if current_roles.iter().any(|r| !requested_roles.contains(&r.as_str())) {
+            return Err(crate::error::AppError::BadRequest(format!(
+                "User already has the role {} and cannot have another role",
+                current_roles.join(", ")
+            )));
         }
 
         let orgs = state.keycloak_service.get_user_organizations(&admin_token, &user.id).await?;

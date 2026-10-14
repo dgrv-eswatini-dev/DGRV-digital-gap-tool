@@ -143,12 +143,20 @@ pub async fn invite_user_to_organization(
 
     let user = if let Some(user) = existing_user {
         // Exclusivity Checks
-        let groups = app_state.keycloak_service.get_user_groups(&admin_token, &user.id).await.unwrap_or_default();
+        let current_roles = app_state.keycloak_service.get_user_app_roles(&admin_token, &user.id).await?;
+        if current_roles.iter().any(|r| r != "org_admin") {
+            return Err(AppError::BadRequest(format!(
+                "User already has the role {} and cannot have another role",
+                current_roles.join(", ")
+            )));
+        }
+
+        let groups = app_state.keycloak_service.get_user_groups(&admin_token, &user.id).await?;
         if !groups.is_empty() {
             return Err(AppError::BadRequest("User is already a member of a cooperative".to_string()));
         }
 
-        let orgs = app_state.keycloak_service.get_user_organizations(&admin_token, &user.id).await.unwrap_or_default();
+        let orgs = app_state.keycloak_service.get_user_organizations(&admin_token, &user.id).await?;
         if orgs.iter().any(|o| o.id != org_id) {
             return Err(AppError::BadRequest("User is already a member of another organization".to_string()));
         }

@@ -358,6 +358,33 @@ impl KeycloakService {
         Ok(user)
     }
 
+    /// Application roles a user can hold. A user may hold at most one of them.
+    pub const EXCLUSIVE_APP_ROLES: [&'static str; 4] =
+        ["dgrv_admin", "org_admin", "coop_admin", "coop_user"];
+
+    /// List the application roles directly assigned to a user (see `EXCLUSIVE_APP_ROLES`)
+    pub async fn get_user_app_roles(&self, token: &str, user_id: &str) -> Result<Vec<String>> {
+        let url = format!(
+            "{}/admin/realms/{}/users/{}/role-mappings/realm",
+            self.config.keycloak.url, self.config.keycloak.realm, user_id
+        );
+        let roles: Vec<serde_json::Value> = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(roles
+            .iter()
+            .filter_map(|r| r.get("name").and_then(|n| n.as_str()))
+            .filter(|n| Self::EXCLUSIVE_APP_ROLES.contains(n))
+            .map(String::from)
+            .collect())
+    }
+
     /// Assign a realm role to a user by role name
     pub async fn assign_realm_role_to_user(
         &self,
