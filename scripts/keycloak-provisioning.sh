@@ -39,26 +39,38 @@ if [ "$login_ok" != true ]; then
   exit 1
 fi
 
-# --- 2. CREATE THE USER ---
-RUN_ONCE_MARKER="${KEYCLOAK_BIN_DIR}/.user_provisioned"
-if [ ! -f "${RUN_ONCE_MARKER}" ]; then
-    ./kcadm.sh create users \
+# --- 2. CREATE THE USER (only if missing) ---
+# Existence is checked against Keycloak itself, not a marker file: the marker lives in the
+# container filesystem and is lost on every container recreate, which used to reset the
+# admin password to the temporary one on each redeploy.
+USER_EXISTS=$(./kcadm.sh get users -r "${REALM}" -q username="${NEW_USER_EMAIL}" -q exact=true \
+    --fields id --server "${KEYCLOAK_SERVER}" 2>/dev/null | grep -c '"id"' || true)
+
+if [ "${USER_EXISTS}" = "0" ]; then
+    echo "[a.sh] User ${NEW_USER_EMAIL} not found, creating it with a temporary password..."
+    if ./kcadm.sh create users \
         -r "${REALM}" \
         -s username="${NEW_USER_EMAIL}" \
         -s email="${NEW_USER_EMAIL}" \
         -s enabled=true \
         -s firstName="${NEW_USER_FIRSTNAME}" \
         -s lastName="${NEW_USER_LASTNAME}" \
-        --server "${KEYCLOAK_SERVER}" && touch "${RUN_ONCE_MARKER}"
-
-    # --- 3. SET TEMPORARY PASSWORD ---
-    ./kcadm.sh set-password \
-        -r "${REALM}" \
-        --username "${NEW_USER_EMAIL}" \
-        --new-password "${TEMP_PASSWORD}" \
-        --temporary \
-        --server "${KEYCLOAK_SERVER}"
+        --server "${KEYCLOAK_SERVER}"; then
+        # --- 3. SET TEMPORARY PASSWORD (new user only) ---
+        ./kcadm.sh set-password \
+            -r "${REALM}" \
+            --username "${NEW_USER_EMAIL}" \
+            --new-password "${TEMP_PASSWORD}" \
+            --temporary \
+            --server "${KEYCLOAK_SERVER}"
+    else
+        echo "[a.sh] Warning: could not create user ${NEW_USER_EMAIL}; password left untouched."
+    fi
+else
+    echo "[a.sh] User ${NEW_USER_EMAIL} already exists; skipping creation and password reset."
 fi
+
+RUN_ONCE_MARKER="${KEYCLOAK_BIN_DIR}/.user_provisioned"
 
 
 # --- 4. ASSIGN REALM-MANAGEMENT ROLES (replace or add/remove as needed) ---
